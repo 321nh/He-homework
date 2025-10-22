@@ -1,0 +1,180 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+class SodTube:
+    def __init__(self, gama=1.4):#γ=1.4，γ是比热比，γ=cp-cv，理想状态下默认为1.4，可修改
+        self.gama = gama
+
+    def exact_solution(self,x,t):
+        """
+        思考一下sod管，由于初始条件P1>P2，所以左侧为膨胀波，右侧为激波
+        """
+        #初始状态
+        ro1,u1,p1=1.0,0.0,1.0 #左初始值，ρ1，u1，p1
+        ro2,u2,p2=0.125,0.0,0.1 #右初始值 ρ2，u2，p2
+        #声速
+        c1=np.sqrt(self.gama*p1/ro1) #左声速，c=√γp/ρ
+        c2=np.sqrt(self.gama*p2/ro2) #右声速
+        #中间变量
+        p_star,u_star=self.solve_p_star(p1,p2,ro1,ro2,u1,u2,c1,c2) #p*,u*
+        c1_star = c1 + ((self.gama - 1) * (u1 - u_star)) / 2 #c*
+        # 左侧膨胀波 第二讲PPT第32页公式
+        ro1_star=self.gama*p_star/c1_star**2
+        Z1_head = u1 - c1
+        Z1_tail = u_star - c1_star
+
+        #右侧激波 第二讲PPT第33页公式
+        A2 = ro2 * c2 * np.sqrt((self.gama + 1) / (2 * self.gama) * (p_star / p2) +
+                                (self.gama - 1) / (2 * self.gama)) #A2
+        ro2_star = ro2 * A2 / (A2 + ro2 * (u2 - u_star))
+        Z2=u2+A2/ro2
+
+        # 接触间断速度
+        M_u=u_star
+
+        #初始化结果数组
+        ro=np.zeros_like(x)
+        u=np.zeros_like(x)
+        p=np.zeros_like(x)
+
+        for i,xi in enumerate(x):#5个区 第二讲PPT第29页
+            xi_t=xi/t if t>0 else 0
+            if xi_t<= Z1_head: #1区
+                ro[i]=ro1
+                u[i]=u1
+                p[i]=p1
+
+            elif Z1_head < xi_t <= Z1_tail: #5区 公式在第二讲PPT第28页
+                c = ((self.gama - 1) / (self.gama + 1)) * (u1 - xi_t) + (2 / (self.gama + 1)) * c1
+                u[i] = c + xi_t
+                p[i] = p1 * ((c / c1) ** (2 * self.gama / (self.gama - 1)))
+                ro[i] = self.gama * p[i] / c ** 2
+
+            elif  Z1_tail<xi_t<=M_u: #3区
+                ro[i]=ro1_star
+                u[i]=u_star
+                p[i]=p_star
+
+            elif M_u<xi_t<=Z2: #4区
+                ro[i]=ro2_star
+                u[i]=u_star
+                p[i]=p_star
+
+            else: #2区
+                ro[i]=ro2
+                u[i]=u2
+                p[i]=p2
+        return ro,u,p
+    def solve_p_star(self,p1,p2,ro1,ro2,u1,u2,c1,c2,tol=1e-10,max_iter=100): #第二讲PPT第32页 单未知数的代数方程 Newton法
+        #初始假设
+        p_star=0.5*(p1+p2)
+        for n in range(max_iter):
+            f,df,u_star=self.p_star_function(p_star,p1,p2,ro1,ro2,u1,u2,c1,c2)
+            delta_p=f/df
+            p_star=p_star-delta_p
+            if abs(delta_p)<tol:
+                break
+        _, _, u_star = self.p_star_function(p_star, p1, p2, ro1, ro2, u1, u2, c1, c2)
+        return p_star,u_star
+
+    def p_star_function(self,p_star,p1,p2,ro1,ro2,u1,u2,c1,c2): #第二讲PPT第27页激波和膨胀波的方程
+
+        # 膨胀波
+        f1 = 2 * c1 / (self.gama - 1) * ((p_star / p1) ** ((self.gama - 1) / (2 * self.gama)) - 1)
+        df1 = (c1 / (self.gama * p1)) * (p_star / p1) ** (-(self.gama + 1) / (2 * self.gama))
+
+        #激波
+        term = (self.gama + 1) / (2 * self.gama) * (p_star / p2) + (self.gama - 1) / (2 * self.gama)
+        f2= (p_star - p2) / (ro2 * c2 * np.sqrt(term))
+        df2 = (1 / (ro2 * c2 * np.sqrt(term))) - \
+               (p_star - p2) / (2 * ro2 * c2 * term ** (3 / 2)) * (
+                           (self.gama + 1) / (2 * self.gama * p2))
+
+        u_star = 0.5 * (u1 + u2 + f2 - f1) #第二讲PPT第32页
+        f=f1+f2 #F（p*）=f（p*，p1，ρ1）+f（p*，p2，ρ2）
+        df=df1+df2
+        return f,df,u_star
+def main():
+    #创建sod求解器
+    sod=SodTube(gama=1.4)
+    # 设置空间和时间参数
+    x = np.linspace(-1, 1, 1000)  # 计算域 [-1, 1]
+    t = 0.14  # 目标时间，作业的要求
+
+    # 计算精确解
+    ro, u, p =sod.exact_solution(x, t)
+
+    # 绘制结果
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    # 密度分布
+    axes[0].plot(x, ro, 'b-', linewidth=2)
+    axes[0].set_xlabel('x')
+    axes[0].set_ylabel('Density (ρ)')
+    axes[0].set_title('Density Distribution at t = {:.2f}'.format(t))
+    axes[0].grid(True, alpha=0.3)
+
+    # 速度分布
+    axes[1].plot(x, u, 'r-', linewidth=2)
+    axes[1].set_xlabel('x')
+    axes[1].set_ylabel('Velocity (u)')
+    axes[1].set_title('Velocity Distribution at t = {:.2f}'.format(t))
+    axes[1].grid(True, alpha=0.3)
+
+    # 压力分布
+    axes[2].plot(x, p, 'g-', linewidth=2)
+    axes[2].set_xlabel('x')
+    axes[2].set_ylabel('Pressure (p)')
+    axes[2].set_title('Pressure Distribution at t = {:.2f}'.format(t))
+    axes[2].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+    # 打印一些关键信息
+    print("Sod激波管问题理论解 (t = {:.2f})".format(t))
+    print("=" * 50)
+    print("初始条件:")
+    print("  左状态: ρ = 1.0, u = 0.0, p = 1.0")
+    print("  右状态: ρ = 0.125, u = 0.0, p = 0.1")
+    print("\n解的特征:")
+    print("  1. 左行膨胀波 ")
+    print("  2. 接触间断")
+    print("  3. 右行激波")
+
+    # 计算中间状态
+    ro1, u1, p1 = 1.0, 0.0, 1.0
+    ro2, u2, p2 = 0.125, 0.0, 0.1
+    c1 = np.sqrt(1.4 * p1/ ro1)
+    c2 = np.sqrt(1.4 * p2 / ro2)
+
+    p_star, u_star = sod.solve_p_star(p1, p2, ro1, ro2, u1, u2, c1, c2)
+    # 计算稀疏波后的状态
+    c1_star = c1 + (sod.gama - 1) * (u1 - u_star) / 2
+    ro1_star = sod.gama * p_star / c1_star ** 2
+
+    # 计算激波后的状态
+    A2 = ro2 * c2 * np.sqrt((sod.gama + 1) / (2 * sod.gama) * (p_star / p2) +
+                            (sod.gama - 1) / (2 * sod.gama))
+    ro2_star = ro2 * A2 / (A2 + ro2 * (u2 - u_star))
+
+    # 计算特征速度
+    Z1_head = u1 - c1
+    Z1_tail = u_star - c1_star
+    Z2 = u2 + A2 / ro2
+
+    print("\n中间状态:")
+    print(f"  中间压力 p* = {p_star:.4f}")
+    print(f"  中间速度 u* = {u_star:.4f}")
+    print(f"  稀疏波后密度 ρ*_L = {ro1_star:.4f}")
+    print(f"  激波后密度 ρ*_R = {ro2_star:.4f}")
+
+    print("\n特征速度:")
+    print(f"  稀疏波头部速度 Z1_head = {Z1_head:.4f}")
+    print(f"  稀疏波尾部速度 Z1_tail = {Z1_tail:.4f}")
+    print(f"  激波速度 Z2 = {Z2:.4f}")
+    print(f"  接触间断速度 = {u_star:.4f}")
+
+
+if __name__ == "__main__":
+    main()
