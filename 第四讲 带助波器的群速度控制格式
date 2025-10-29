@@ -1,0 +1,237 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
+
+
+class GroupVelocity:
+    def __init__(self, x_left, x_right, Nx, t_init, t_stop, Nt, u, sigma_u, sigma_d, eps0):
+        # 网格参数
+        self.x_left = x_left
+        self.x_right = x_right
+        self.Nx = Nx
+        self.t_init = t_init
+        self.t_stop = t_stop
+        self.Nt = Nt
+
+        # 波速和助波器参数
+        self.u = u
+        self.sigma_u = sigma_u  # σu
+        self.sigma_d = sigma_d  # σd
+        self.eps0 = eps0
+
+        # 创建网格
+        self.x_grid = np.linspace(x_left, x_right, Nx + 1)  # 空间网格
+        self.t_grid = np.linspace(t_init, t_stop, Nt + 1)  # 时间网格
+        self.dx = self.x_grid[1] - self.x_grid[0]  # 空间步长
+        self.dt = self.t_grid[1] - self.t_grid[0]  # 时间步长
+
+        # 初始化流场
+        self.u0 = self.initial_condition()
+
+    def initial_condition(self):
+        #题目要求的初始条件
+        u0 = np.zeros(self.Nx + 1)
+        mask = (self.x_grid >= 0.4) & (self.x_grid <= 0.6)
+        u0[mask] = 1.0
+        return u0
+
+    def compute_sigma(self, u):
+        sigma = np.zeros(self.Nx + 1)
+        u_ext = np.concatenate([u[-1:], u, u[:1]]) #周期边界处理
+
+        for i in range(1, self.Nx + 2):
+            du_forward = u_ext[i + 1] - u_ext[i]  # 前向差分
+            du_backward = u_ext[i] - u_ext[i - 1]  # 后向差分
+
+            denom = np.abs(du_forward) + np.abs(du_backward) + self.eps0 #分母
+
+            sigma[i - 1] = (self.sigma_u * np.abs(du_forward) +
+                            self.sigma_d * np.abs(du_backward)) / denom
+
+        return sigma
+
+    def delta_x6(self, u, i):
+        u_ext = np.concatenate([u[-3:], u, u[:3]])
+        i_ext = i + 3
+        delta_x6 = (u_ext[i_ext - 3] - 6 * u_ext[i_ext - 2] + 15 * u_ext[i_ext - 1] -
+                    20 * u_ext[i_ext] + 15 * u_ext[i_ext + 1] - 6 * u_ext[i_ext + 2] + u_ext[i_ext + 3])
+
+        return delta_x6
+
+    def WB(self, u, sigma):
+
+        u_star = np.zeros(self.Nx + 1)
+
+        for i in range(self.Nx + 1):
+            u_star[i] = u[i] - (sigma[i] / 8) * self.delta_x6(u, i)
+        return u_star
+
+    def F_i(self, u_star, i):
+        u_ext = np.concatenate([u_star[-4:], u_star, u_star[:4]])
+        i_ext = i + 4
+
+        F_i = (3 * u_ext[i_ext - 4] - 28 * u_ext[i_ext - 3] + 126 * u_ext[i_ext - 2] -
+               420 * u_ext[i_ext - 1] + 105 * u_ext[i_ext] + 252 * u_ext[i_ext + 1] -
+               42 * u_ext[i_ext + 2] + 4 * u_ext[i_ext + 3]) / (420 * self.dx)
+        return F_i
+
+    def WB_derivative(self, u):
+
+        sigma = self.compute_sigma(u)
+        u_star = self.WB(u, sigma)
+        du_dx = np.zeros(self.Nx + 1)
+        for i in range(self.Nx + 1):
+            du_dx[i] = self.F_i(u_star, i)
+        return du_dx
+
+    def No_WB_derivative(self, u):
+        # 直接使用F_i计算，不应用助波器
+        du_dx = np.zeros(self.Nx + 1)
+        for i in range(self.Nx + 1):
+            du_dx[i] = self.F_i(u, i)
+
+        return du_dx
+
+    def rk3_step(self, u, dt, use_WB=True):
+        """三阶龙格-库塔时间推进"""
+        # 第一步
+        if use_WB:
+            L1 = -self.u * self.WB_derivative(u)
+        else:
+            L1 = -self.u * self.No_WB_derivative(u)
+        u1 = u + dt * L1
+
+        # 第二步
+        if use_WB:
+            L2 = -self.u * self.WB_derivative(u1)
+        else:
+            L2 = -self.u * self.No_WB_derivative(u1)
+        u2 = (3 / 4) * u + (1 / 4) * u1 + (1 / 4) * dt * L2
+
+        # 第三步
+        if use_WB:
+            L3 = -self.u * self.WB_derivative(u2)
+        else:
+            L3 = -self.u * self.No_WB_derivative(u2)
+        u_new = (1 / 3) * u + (2 / 3) * u2 + (2 / 3) * dt * L3
+
+        return u_new
+
+    def solve(self, use_WB=True):
+        """求解到指定时间"""
+        u = self.u0.copy()
+
+        # 时间推进
+        for n in range(self.Nt):
+            u = self.rk3_step(u, self.dt, use_WB)
+
+        return u
+
+    def exact_solution(self, t=None):
+        """精确解"""
+        if t is None:
+            t = self.t_stop
+
+        u_exact = np.zeros(self.Nx + 1)
+        x_shifted = (self.x_grid - self.u * t) % (self.x_right - self.x_left)
+        mask = (x_shifted >= 0.4) & (x_shifted <= 0.6)
+        u_exact[mask] = 1.0
+
+        return u_exact
+
+
+def main():
+    # 网格参数
+    x_left = 0
+    x_right = 1
+    Nx = 100
+    t_init = 0
+    t_stop = 0.2
+    Nt = 400
+    u = 1.0
+
+    cases = [
+        ("使用助波器 (σu=0.1, σd=0.0)", 0.1, 0.0, 'r--'),
+        ("关闭助波器 (σu=0.0, σd=0.0)", 0.0, 0.0, 'b:'),
+        ("自选系数 (σu=0.05, σd=0.1)", 0.05, 0.0, 'g-.')
+    ]
+
+    # 计算精确解
+    solver_base = GroupVelocity(
+        x_left=x_left, x_right=x_right, Nx=Nx,
+        t_init=t_init, t_stop=t_stop, Nt=Nt,
+        u=u, sigma_u=0.1, sigma_d=0.0, eps0=1e-6
+    )
+
+    u_exact = solver_base.exact_solution()
+
+    # 存储结果
+    results = []
+
+    # 对每种情况进行计算
+    for case_name, sigma_u, sigma_d, line_style in cases:
+        print(f"\n计算情况: {case_name}")
+
+        # 创建求解器
+        solver = GroupVelocity(
+            x_left=x_left, x_right=x_right, Nx=Nx,
+            t_init=t_init, t_stop=t_stop, Nt=Nt,
+            u=u, sigma_u=sigma_u, sigma_d=sigma_d, eps0=1e-6
+        )
+
+        # 使用助波器计算
+        u_numerical = solver.solve(use_WB=True)
+
+        # 计算误差
+        error = np.sqrt(np.sum((u_numerical - u_exact) ** 2) / (Nx + 1))
+
+        results.append({
+            'name': case_name,
+            'u': u_numerical,
+            'error': error,
+            'line_style': line_style,
+            'sigma_u': sigma_u,
+            'sigma_d': sigma_d
+        })
+
+        print(f"RMS误差: {error:.6f}")
+
+    # 绘制结果
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    axes = axes.flatten()
+
+    # 每个方法单独的子图
+    for i, result in enumerate(results):
+        axes[i].plot(solver_base.x_grid, u_exact, 'k-', linewidth=2, label='精确解')
+        axes[i].plot(solver_base.x_grid, result['u'], result['line_style'],
+                     linewidth=2, label=result['name'])
+        axes[i].set_xlabel('x')
+        axes[i].set_ylabel('u')
+        axes[i].set_title(f'{result["name"]} (RMS误差: {result["error"]:.6f})')
+        axes[i].legend()
+        axes[i].grid(True, alpha=0.3)
+
+    # 合并对比图
+    axes[3].plot(solver_base.x_grid, u_exact, 'k-', linewidth=3, label='精确解')
+    for result in results:
+        axes[3].plot(solver_base.x_grid, result['u'], result['line_style'],
+                     linewidth=2, label=result['name'])
+    axes[3].set_xlabel('x')
+    axes[3].set_ylabel('u')
+    axes[3].set_title(f't={t_stop}时刻的数值解与精确解对比')
+    axes[3].legend()
+    axes[3].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+    # 输出误差对比
+    print("\n误差对比:")
+    for result in results:
+        print(f"{result['name']}: {result['error']:.6f}")
+
+
+if __name__ == "__main__":
+    main()
