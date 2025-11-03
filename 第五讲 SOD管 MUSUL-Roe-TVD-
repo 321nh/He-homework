@@ -1,0 +1,483 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
+
+class SodTube:
+    def __init__(self, gama=1.4):
+        self.gama = gama
+
+    def exact_solution(self, x, t):
+        """
+        Sod激波管问题的精确解
+        """
+        # 初始状态
+        ro1, u1, p1 = 1.0, 0.0, 1.0  # 左初始值，ρ1，u1，p1
+        ro2, u2, p2 = 0.125, 0.0, 0.1  # 右初始值 ρ2，u2，p2
+        # 声速
+        c1 = np.sqrt(self.gama * p1 / ro1)  # 左声速，c=√γp/ρ
+        c2 = np.sqrt(self.gama * p2 / ro2)  # 右声速
+        # 中间变量
+        p_star, u_star = self.solve_p_star(p1, p2, ro1, ro2, u1, u2, c1, c2)  # p*,u*
+        c1_star = c1 + ((self.gama - 1) * (u1 - u_star)) / 2  # c*
+        # 左侧膨胀波
+        ro1_star = self.gama * p_star / c1_star ** 2
+        Z1_head = u1 - c1
+        Z1_tail = u_star - c1_star
+
+        # 右侧激波
+        A2 = ro2 * c2 * np.sqrt((self.gama + 1) / (2 * self.gama) * (p_star / p2) +
+                                (self.gama - 1) / (2 * self.gama))  # A2
+        ro2_star = ro2 * A2 / (A2 + ro2 * (u2 - u_star))
+        Z2 = u2 + A2 / ro2
+
+        # 接触间断速度
+        M_u = u_star
+
+        # 初始化结果数组
+        ro = np.zeros_like(x)
+        u = np.zeros_like(x)
+        p = np.zeros_like(x)
+
+        for i, xi in enumerate(x):
+            xi_shifted = xi - 0.5
+            xi_t = xi_shifted / t if t > 0 else 0
+            if xi_t <= Z1_head:  # 1区
+                ro[i] = ro1
+                u[i] = u1
+                p[i] = p1
+
+            elif Z1_head < xi_t <= Z1_tail:  # 5区
+                c = ((self.gama - 1) / (self.gama + 1)) * (u1 - xi_t) + (2 / (self.gama + 1)) * c1
+                u[i] = c + xi_t
+                p[i] = p1 * ((c / c1) ** (2 * self.gama / (self.gama - 1)))
+                ro[i] = self.gama * p[i] / c ** 2
+
+            elif Z1_tail < xi_t <= M_u:  # 3区
+                ro[i] = ro1_star
+                u[i] = u_star
+                p[i] = p_star
+
+            elif M_u < xi_t <= Z2:  # 4区
+                ro[i] = ro2_star
+                u[i] = u_star
+                p[i] = p_star
+
+            else:  # 2区
+                ro[i] = ro2
+                u[i] = u2
+                p[i] = p2
+        return ro, u, p
+
+    def solve_p_star(self, p1, p2, ro1, ro2, u1, u2, c1, c2, tol=1e-10, max_iter=100):
+        # 初始假设
+        p_star = 0.5 * (p1 + p2)
+        for n in range(max_iter):
+            f, df, u_star = self.p_star_function(p_star, p1, p2, ro1, ro2, u1, u2, c1, c2)
+            delta_p = f / df
+            p_star = p_star - delta_p
+            if abs(delta_p) < tol:
+                break
+        _, _, u_star = self.p_star_function(p_star, p1, p2, ro1, ro2, u1, u2, c1, c2)
+        return p_star, u_star
+
+    def p_star_function(self, p_star, p1, p2, ro1, ro2, u1, u2, c1, c2):
+        # 膨胀波
+        f1 = 2 * c1 / (self.gama - 1) * ((p_star / p1) ** ((self.gama - 1) / (2 * self.gama)) - 1)
+        df1 = (c1 / (self.gama * p1)) * (p_star / p1) ** (-(self.gama + 1) / (2 * self.gama))
+
+        # 激波
+        term = (self.gama + 1) / (2 * self.gama) * (p_star / p2) + (self.gama - 1) / (2 * self.gama)
+        f2 = (p_star - p2) / (ro2 * c2 * np.sqrt(term))
+        df2 = (1 / (ro2 * c2 * np.sqrt(term))) - \
+              (p_star - p2) / (2 * ro2 * c2 * term ** (3 / 2)) * (
+                      (self.gama + 1) / (2 * self.gama * p2))
+
+        u_star = 0.5 * (u1 + u2 + f2 - f1)
+        f = f1 + f2
+        df = df1 + df2
+        return f, df, u_star
+
+class NUM_SodTube:
+    def __init__(self, x_left, x_right, Nx, t_init, t_stop, Nt, gama=1.4, CFL=0.5):
+        # 网格参数
+        self.x_left = x_left
+        self.x_right = x_right
+        self.Nx = Nx
+        self.t_init = t_init
+        self.t_stop = t_stop
+        self.Nt = Nt
+        self.gama = gama
+        self.CFL = CFL
+
+        # 创建网格
+        self.x_grid = np.linspace(x_left, x_right, Nx + 1)  # 空间网格
+        self.t_grid = np.linspace(t_init, t_stop, Nt + 1)  # 时间网格
+        self.x_center = 0.5 * (self.x_grid[1:] + self.x_grid[:-1])  # 网格中心点
+        self.dx = self.x_grid[1] - self.x_grid[0]  # 空间步长
+        self.dt_fixed = self.t_grid[1] - self.t_grid[0]  # 固定时间步长
+
+        # 初始化流场
+        self.U = np.zeros((3, Nx))  # U[0]=ρ U[1]=ρu U[2]=E
+        self.initial_condition()
+
+    def initial_condition(self):
+        """设置Sod激波管问题的初始条件"""
+        # 左状态
+        rho_L, u_L, p_L = 1.0, 0.0, 1.0
+        # 右状态
+        rho_R, u_R, p_R = 0.125, 0.0, 0.1
+
+        # 在x=0.5处设置间断
+        for i in range(self.Nx):
+            if self.x_center[i] < 0.5:  # 左状态区域
+                self.U[0, i] = rho_L  # 密度
+                self.U[1, i] = rho_L * u_L  # 动量
+                self.U[2, i] = p_L / (self.gama - 1) + 0.5 * rho_L * u_L ** 2  # 能量 E = p/(γ-1) + 0.5ρu²
+            else:  # 右状态区域
+                self.U[0, i] = rho_R  # 密度
+                self.U[1, i] = rho_R * u_R  # 动量
+                self.U[2, i] = p_R / (self.gama - 1) + 0.5 * rho_R * u_R ** 2  # 能量
+
+    def original_variables(self, U):
+        """从守恒变量计算原始变量，添加数值稳定性检查"""
+        rho = U[0]
+        u = U[1] / rho
+        p = (self.gama - 1) * (U[2] - 0.5 * rho * u ** 2)
+        return rho, u, p
+
+    def sound_speed(self, p, rho):
+        c = np.sqrt(self.gama * p / rho)
+        return c
+
+    def flux(self, U):
+        """计算通量向量"""
+        rho, u, p = self.original_variables(U)
+        E = U[2]
+        return np.array([
+            rho * u,  # 质量通量
+            rho * u ** 2 + p,  # 动量通量
+            u * (E + p)  # 能量通量
+        ])
+
+    def roe(self, UL, UR):
+        rhoL, uL, pL = self.original_variables(UL)
+        rhoR, uR, pR = self.original_variables(UR)
+
+        # Roe平均
+        sqrt_rhoL = np.sqrt(rhoL)
+        sqrt_rhoR = np.sqrt(rhoR)
+
+        u_roe = (sqrt_rhoL * uL + sqrt_rhoR * uR) / (sqrt_rhoL + sqrt_rhoR)
+
+        HL = (UL[2] + pL) / rhoL
+        HR = (UR[2] + pR) / rhoR
+        H_roe = (sqrt_rhoL * HL + sqrt_rhoR * HR) / (sqrt_rhoL + sqrt_rhoR)
+
+        c_roe = np.sqrt((self.gama - 1) * (H_roe - 0.5 * u_roe ** 2))
+
+        return u_roe, c_roe, H_roe
+
+    def characteristic_decomposition(self, u_roe, c_roe, H_roe):
+        """将Jacobian矩阵A(U)进行特征分解: A(U) = S^{-1} Δ S"""
+        # 特征值矩阵 Δ
+        Delta = np.diag([u_roe - c_roe, u_roe, u_roe + c_roe])
+
+        # 右特征向量矩阵 S^{-1}
+        S_inv= np.zeros((3, 3))
+        S_inv[0, 0] = 1
+        S_inv[1, 0] = u_roe - c_roe
+        S_inv[2, 0] = H_roe - u_roe * c_roe
+
+        S_inv[0, 1] = 1
+        S_inv[1, 1] = u_roe
+        S_inv[2, 1] = 0.5 * u_roe ** 2
+
+        S_inv[0, 2] = 1
+        S_inv[1, 2] = u_roe + c_roe
+        S_inv[2, 2] = H_roe + u_roe * c_roe
+
+        # 左特征向量矩阵 S
+        S = np.zeros((3, 3))
+        S[0, 0] = 0.5 * ((self.gama - 1) * u_roe ** 2 / (2 * c_roe ** 2) + u_roe / (2 * c_roe))
+        S[0, 1] = -0.5 * ((self.gama - 1) * u_roe / c_roe ** 2 + 1 / c_roe)
+        S[0, 2] = 0.5 * (self.gama - 1) / c_roe ** 2
+
+        S[1, 0] = 1 - (self.gama - 1) * u_roe ** 2 / (2 * c_roe ** 2)
+        S[1, 1] = (self.gama - 1) * u_roe / c_roe ** 2
+        S[1, 2] = -(self.gama - 1) / c_roe ** 2
+
+        S[2, 0] = 0.5 * ((self.gama - 1) * u_roe ** 2 / (2 * c_roe ** 2) - u_roe / (2 * c_roe))
+        S[2, 1] = -0.5 * ((self.gama - 1) * u_roe / c_roe ** 2 - 1 / c_roe)
+        S[2, 2] = 0.5 * (self.gama - 1) / c_roe ** 2
+
+        return S_inv, Delta, S
+
+    def compute_roe_flux(self, UR, UL):#第5讲第24页PPT
+        """按照给定流程计算Roe通量"""
+        # 步骤1: 利用差分格式计算 UR, UL
+        # 步骤2: 采用Roe平均公式计算Roe平均值
+        u_roe, c_roe, H_roe = self.roe(UL, UR)
+
+        # 步骤3: 将Jacobian矩阵A(U)进行特征分解
+        S_inv, Delta, S = self.characteristic_decomposition(u_roe, c_roe, H_roe)
+
+        # 步骤4: 计算 A_tilde = S^{-1} |Δ| S
+        # 应用熵修正,第5讲第25页PPT
+        epsilon = 0.1 * c_roe
+        abs_Delta = np.diag([
+            np.abs(u_roe - c_roe) if np.abs(u_roe - c_roe) >= epsilon
+            else 0.5 * (epsilon + (u_roe - c_roe) ** 2 / epsilon),
+            np.abs(u_roe) if np.abs(u_roe) >= epsilon
+            else 0.5 * (epsilon + u_roe ** 2 / epsilon),
+            np.abs(u_roe + c_roe) if np.abs(u_roe + c_roe) >= epsilon
+            else 0.5 * (epsilon + (u_roe + c_roe) ** 2 / epsilon)
+        ])
+
+        A_tilde = S_inv@ abs_Delta @ S #|A|=R|λ|L,本质是右特征向量×特征值×左特征向量
+
+        # 步骤5: 计算界面通量
+        fR = self.flux(UR)
+        fL = self.flux(UL)
+        f_j_half = 0.5 * (fR + fL) - 0.5 * A_tilde @ (UR - UL)
+
+        return f_j_half
+
+    def reconstruct_states(self, U):
+        """
+        使用MUSCL格式进行状态重构，结合斜率限制器
+        """
+        U_left = np.zeros((3, self.Nx + 1))
+        U_right = np.zeros((3, self.Nx + 1))
+
+        # 转换为原始变量[ρ, u, p]
+        rho, u, p = self.original_variables(U)
+
+        # 计算原始变量的斜率
+        for var_idx, var in enumerate([rho, u, p]):
+            # 计算每个变量的斜率
+            slopes = np.zeros(self.Nx)
+
+            # 使用minmod限制器计算斜率
+            for i in range(1, self.Nx - 1):
+                # 前向差分
+                forward = var[i + 1] - var[i]
+                # 后向差分
+                backward = var[i] - var[i - 1]
+                # 中心差分
+                center = 0.5 * (var[i + 1] - var[i - 1])
+
+                # 应用minmod限制器：选择最小斜率的符号
+                if forward * backward > 0:
+                    slopes[i] = np.sign(forward) * min(abs(forward), abs(backward), abs(center))
+                else:
+                    slopes[i] = 0.0
+
+            # 边界处理
+            slopes[0] = 0.0
+            slopes[self.Nx - 1] = 0.0
+
+            # 重构界面状态
+            for i in range(1, self.Nx):
+                # 左界面状态（从单元i-1的右侧）
+                if var_idx == 0:  # 密度
+                    U_left[0, i] = rho[i - 1] + 0.5 * slopes[i - 1]
+                elif var_idx == 1:  # 速度
+                    U_left[1, i] = (rho[i - 1] * u[i - 1] + 0.5 * slopes[i - 1] * rho[i - 1]) / rho[i - 1]
+                else:  # 压力
+                    U_left[2, i] = p[i - 1] + 0.5 * slopes[i - 1]
+
+                # 右界面状态（从单元i的左侧）
+                if var_idx == 0:  # 密度
+                    U_right[0, i] = rho[i] - 0.5 * slopes[i]
+                elif var_idx == 1:  # 速度
+                    U_right[1, i] = (rho[i] * u[i] - 0.5 * slopes[i] * rho[i]) / rho[i]
+                else:  # 压力
+                    U_right[2, i] = p[i] - 0.5 * slopes[i]
+
+        # 边界条件
+        U_left[:, 0] = U[:, 0]
+        U_right[:, 0] = U[:, 0]
+        U_left[:, -1] = U[:, -1]
+        U_right[:, -1] = U[:, -1]
+
+        # 确保守恒变量的一致性
+        for i in range(self.Nx + 1):
+            # 从左状态计算守恒变量
+            rho_L = U_left[0, i]
+            u_L = U_left[1, i]
+            p_L = U_left[2, i]
+            U_left[1, i] = rho_L * u_L  # 动量
+            U_left[2, i] = p_L / (self.gama - 1) + 0.5 * rho_L * u_L ** 2  # 能量
+
+            # 从右状态计算守恒变量
+            rho_R = U_right[0, i]
+            u_R = U_right[1, i]
+            p_R = U_right[2, i]
+            U_right[1, i] = rho_R * u_R  # 动量
+            U_right[2, i] = p_R / (self.gama - 1) + 0.5 * rho_R * u_R ** 2  # 能量
+
+        return U_left, U_right
+
+    def compute_dt(self, U):
+        """根据CFL条件计算时间步长"""
+        rho, u, p = self.original_variables(U)
+        c = self.sound_speed(p, rho)
+        max_lambda = np.max(np.abs(u) + c)
+        dt = self.CFL * self.dx / max_lambda if max_lambda > 0 else self.dt_fixed
+        return min(dt, self.dt_fixed)  # 不超过固定时间步长
+
+    def compute_spatial_derivative(self, U):
+        """计算空间导数 ∂f/∂x"""
+        # 重构界面状态
+        U_left, U_right = self.reconstruct_states(U)
+
+        # 计算所有界面的通量
+        F_interface = np.zeros((3, self.Nx + 1))
+        for i in range(self.Nx + 1):
+            if i == 0:
+                F_interface[:, i] = self.flux(U[:, 0])
+            elif i == self.Nx:
+                F_interface[:, i] = self.flux(U[:, -1])
+            else:
+                # 使用重构的左右状态计算界面通量
+                F_interface[:, i] = self.compute_roe_flux(U_right[:, i], U_left[:, i])
+
+        # 计算空间导数: ∂f/∂x = (f_{j+1/2} - f_{j-1/2}) / Δx
+        df_dx = np.zeros((3, self.Nx))
+        for j in range(self.Nx):
+            df_dx[:, j] = (F_interface[:, j + 1] - F_interface[:, j]) / self.dx
+
+        return df_dx
+
+    def rk3_step(self):
+        """三阶龙格库塔时间推进"""
+        dt = self.compute_dt(self.U)
+
+        # 第一步
+        U1 = self.U.copy()
+        L1 = self.compute_spatial_derivative(U1)
+        U1 = self.U - dt * L1
+
+        # 第二步
+        U2 = self.U.copy()
+        L2 = self.compute_spatial_derivative(U1)
+        U2 = 0.75 * self.U + 0.25 * (U1 - dt * L2)
+
+
+        # 第三步
+        U3 = self.U.copy()
+        L3 = self.compute_spatial_derivative(U2)
+        self.U = (1 / 3) * self.U + (2 / 3) * (U2 - dt * L3)
+        return dt
+
+    def solve(self):
+        """求解Sod激波管问题"""
+        print("开始计算数值解...")
+
+        # 存储结果
+        solutions = []
+        solutions.append(self.U.copy())
+
+        # 时间推进
+        t_current = self.t_init
+        step_count = 0
+
+        while t_current < self.t_stop and step_count < self.Nt:
+            dt = self.rk3_step()
+            t_current += dt
+            step_count += 1
+
+            # 每100步输出一次进度
+            if step_count % 100 == 0:
+                print(f"步骤 {step_count}, 时间 t = {t_current:.6f}, dt = {dt:.6f}")
+
+        print(f"完成计算，共 {step_count} 步，最终时间 t = {t_current:.6f}")
+
+        # 获取最终解
+        rho, u, p = self.original_variables(self.U)
+        return self.x_center, rho, u, p
+
+
+def main():
+    # 设置计算参数
+    x_left = 0.0
+    x_right = 1.0
+    Nx = 200
+    t_init = 0.0
+    t_stop = 0.14
+    Nt = 1000  # 时间步数
+    CFL = 0.1
+
+    # 创建数值解求解器
+    solver = NUM_SodTube(x_left, x_right, Nx, t_init, t_stop, Nt, gama=1.4,CFL=CFL)
+
+    # 计算数值解
+    x_num, rho_num, u_num, p_num = solver.solve()
+
+    # 计算精确解 - 使用与数值解相同的网格点
+    sod_exact = SodTube(gama=1.4)
+    # 使用数值解的网格点计算精确解
+    x_exact = x_num  # 使用数值解的网格点
+    rho_exact, u_exact, p_exact = sod_exact.exact_solution(x_exact, t_stop)
+
+    # 为了绘制光滑的精确解曲线，也计算高分辨率的精确解用于绘图
+    x_exact_highres = np.linspace(x_left, x_right, 1000)
+    rho_exact_highres, u_exact_highres, p_exact_highres = sod_exact.exact_solution(x_exact_highres, t_stop)
+
+    # 绘图
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    # 密度
+    axes[0].plot(x_num, rho_num, 'bo', markersize=2, label='MUSCL-Roe-TVD')
+    axes[0].plot(x_exact_highres, rho_exact_highres, 'r-', linewidth=1, label='Exact')
+    axes[0].set_xlabel('x')
+    axes[0].set_ylabel('密度')
+    axes[0].set_title('Density at t=0.14')
+    axes[0].legend()
+    axes[0].grid(True)
+
+    # 速度
+    axes[1].plot(x_num, u_num, 'bo', markersize=2, label='MUSCL-Roe-TVD')
+    axes[1].plot(x_exact_highres, u_exact_highres, 'r-', linewidth=1, label='Exact')
+    axes[1].set_xlabel('x')
+    axes[1].set_ylabel('速度')
+    axes[1].set_title('Velocity at t=0.14')
+    axes[1].legend()
+    axes[1].grid(True)
+
+    # 压力
+    axes[2].plot(x_num, p_num, 'bo', markersize=2, label='MUSCL-Roe-TVD')
+    axes[2].plot(x_exact_highres, p_exact_highres, 'r-', linewidth=1, label='Exact')
+    axes[2].set_xlabel('x')
+    axes[2].set_ylabel('压力')
+    axes[2].set_title('Pressure at t=0.14')
+    axes[2].legend()
+    axes[2].grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
+    # 计算误差
+    if not (np.any(np.isnan(rho_num)) or np.any(rho_num <= 0)):
+        rho_error = np.sqrt(np.sum((rho_num - rho_exact) ** 2) / Nx)
+        u_error = np.sqrt(np.sum((u_num - u_exact) ** 2) / Nx)
+        p_error = np.sqrt(np.sum((p_num - p_exact) ** 2) / Nx)
+
+        print(f"\n误差分析:")
+        print(f"密度 L2 误差: {rho_error:.6f}")
+        print(f"速度 L2 误差: {u_error:.6f}")
+        print(f"压力 L2 误差: {p_error:.6f}")
+    else:
+        print(f"\n计算失败，无法进行误差分析")
+
+    print(f"\n计算参数:")
+    print(f"空间网格数: {solver.Nx}")
+    print(f"时间步数: {solver.Nt}")
+    print(f"CFL数: {solver.CFL}")
+    print(f"空间步长: {solver.dx:.6f}")
+
+
+if __name__ == "__main__":
+    main()
