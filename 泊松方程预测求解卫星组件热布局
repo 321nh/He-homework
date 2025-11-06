@@ -1,0 +1,199 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import time
+
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
+
+fig,ax=plt.subplots(1,1,figsize=(8,6))
+fig.set_tight_layout(True)
+
+Nx=100
+Ny=100
+x_left = 0
+x_right = 1
+y_down = 0
+y_up = 1
+x_grid = np.linspace(x_left, x_right, Nx + 1)
+y_grid = np.linspace(y_down, y_up, Ny + 1)
+dx = x_grid[1] - x_grid[0]
+dy = y_grid[1] - y_grid[0]
+
+def update(Nx):#d²T/dx² = -1, 在区间 [-1, 1] 上，边界条件为 T(-1)=0 和 T(1)=0。
+    ax.clear()
+    start_time = time.time()
+    x_left_1d = -1
+    x_right_1d = 1
+    x_grid_1d = np.linspace(x_left_1d, x_right_1d, Nx + 1)
+    dx_1d = x_grid_1d[1] - x_grid_1d[0]
+
+    A=np.zeros((Nx+1,Nx+1))
+    A[0,0]=1# 左边界：T₀ = 0
+    A[range(1,Nx),range(1,Nx)]=-2/dx_1d**2
+    A[range(1,Nx),range(Nx-1)]=1/dx_1d**2
+    A[range(1,Nx),range(2,Nx+1)]=1/dx_1d**2
+    A[-1,-1]=1# 右边界：T_N = 0
+    b=np.concatenate([np.array([0]),-np.ones(Nx-1),np.array([0])])
+    T = np.linalg.solve(A, b)
+
+    end_time = time.time()
+    time_1d = end_time - start_time
+
+    ax.plot(x_grid_1d, T,label='数值解')
+    x_grid = np.linspace(-1, 1, 1000)
+    ax.plot(x_grid, 0.5 * (1 + x_grid) * (1 - x_grid), '--',label='解析解')
+    ax.set_xlabel('x')
+    ax.set_ylabel('T')
+    ax.set_title('一维泊松方程')
+    ax.legend()
+    ax.grid(True)
+
+    return time_1d
+
+time_1d=update(Nx)
+plt.show()
+
+def heat_source(x_left, x_right, y_down, y_up, power): #np.heaviside(x, 0),是阶跃函数：当x>0时返回1;当x<0时返回0;当x=0时返回第二个参数0
+    def power_of(x, y):
+        return power * (np.heaviside(x- x_left, 0) * np.heaviside(x_right - x, 0) * np.heaviside(y - y_down, 0) * np.heaviside(y_up - y, 0))
+    return power_of #检查点 (x, y) 是否在矩形区域内
+#3个热源
+f1 = heat_source(0.1, 0.3, 0.3, 0.7, 0.3)
+f2 = heat_source(0.5, 0.8, 0.2, 0.4, 0.5)
+f3 = heat_source(0.5, 0.7, 0.6, 0.9, 0.7)
+
+x_ = np.linspace(0, 1, Nx + 1) #热源x方向网格
+y_ = np.linspace(0, 1, Ny + 1) #热源y方向网格
+x,y = np.meshgrid(x_grid, y_grid) #二维网格坐标
+
+Q = f1(x, y) + f2(x, y) + f3(x, y) #叠加热源
+
+def Poisson2 (Nx, Ny, dx, dy):
+    A = np.zeros(((Nx + 1) * (Ny + 1), (Nx + 1) * (Ny + 1)))
+    for j in range(Ny + 1):  # y方向
+        for i in range(Nx + 1):  # x方向
+            idx = j * (Nx + 1) + i  #当前节点索引
+
+            if j == 0:
+                # 底边 - Dirichlet边界条件: T = 0
+                A[idx, idx] = 1.0
+
+            elif j == Ny:
+                # 顶边 - Neumann边界条件: ∂T/∂y = 0
+                # 使用后向差分: (T[i,Ny] - T[i,Ny-1])/dy = 0 (dy看做1，省略）
+                A[idx, idx] = 1.0
+                A[idx, idx - (Nx + 1)] = -1.0
+
+            elif i == 0:
+                # 左边 - Neumann边界条件: ∂T/∂x = 0
+                # 使用前向差分: T[1,j] - T[0,j] = 0(dx看做1，省略）
+                A[idx, idx] = -1.0
+                A[idx, idx + 1] = 1.0
+
+            elif i == Nx:
+                # 右边 - Neumann边界条件: ∂T/∂x = 0
+                # 使用后向差分: (T[Nx,j] - T[Nx-1,j])/dx = 0
+                A[idx, idx] = 1.0
+                A[idx, idx - 1] = -1.0
+
+            else:
+                # 内部节点 - 五点差分格式
+                # ∇²T ≈ (T[i-1,j] - 2T[i,j] + T[i+1,j])/dx² + (T[i,j-1] - 2T[i,j] + T[i,j+1])/dy²
+
+                A[idx, idx - 1] = 1.0 / dx ** 2  # 左邻点
+                A[idx, idx + 1] = 1.0 / dx ** 2  # 右邻点
+                A[idx, idx - (Nx + 1)] = 1.0 / dy ** 2  # 下邻点
+                A[idx, idx + (Nx + 1)] = 1.0 / dy ** 2  # 上邻点
+                A[idx, idx] = -2.0 / dx ** 2 - 2.0 / dy ** 2  # 中心点
+
+    return A
+
+def Poisson2_compare (Nx, Ny, dx, dy):
+    blk_1 = np.diag(np.ones(Nx + 1)) * (-2 / dx**2 - 2 / dy**2) \
+            + np.diag(np.ones(Nx), 1) / dx**2 \
+            + np.diag(np.ones(Nx), -1) / dx**2
+    blk_1[0, 0] = 1
+    blk_1[0, 1] = -1
+    blk_1[-1, -1] = 1
+    blk_1[-1, -2] = -1
+    blk_2 = np.diag(np.ones(Nx + 1)) / dy**2
+    blk_2[0, 0] = 0
+    blk_2[-1, -1] = 0
+    A = np.zeros(((Nx + 1) * (Ny + 1), (Nx + 1) * (Ny + 1)))
+    for block_i in range(Ny + 1):
+        if block_i == 0:
+            A[:Nx + 1, :Nx + 1] = np.diag(np.ones(Nx + 1))
+        elif block_i == Ny:
+            A[Ny * (Nx + 1):, Ny * (Nx + 1):] = np.diag(np.ones(Nx + 1))
+            A[Ny * (Nx + 1):, (Ny - 1) * (Nx + 1):Ny * (Nx + 1):] = -np.diag(np.ones(Nx + 1))
+        else:
+            start = block_i * (Nx + 1)
+            A[start:start + Nx + 1, start:start + Nx + 1] = blk_1
+            A[start:start + Nx + 1, start - Nx - 1:start] = blk_2
+            A[start:start + Nx + 1, start + Nx + 1:start + 2 * Nx + 2] = blk_2
+    return A
+
+
+
+def solve_Poisson2():
+    #泊松方程形式: D∇²T = -Q（D=1忽略）
+    A = Poisson2(Nx,Ny,dx,dy)
+
+    # 右端
+    b = -Q.ravel()
+
+    # 求解线性方程组
+    T_vector = np.linalg.solve(A, b)
+
+    # 将结果重塑为二维网格
+    T = T_vector.reshape(Ny + 1, Nx + 1)
+
+
+    return T
+def solve_Poisson2_compare():
+    #泊松方程形式: D∇²T = -Q（D=1忽略）
+    A = Poisson2_compare(Nx,Ny,dx,dy)
+
+    # 右端
+    b = -Q.ravel()
+
+    # 求解线性方程组
+    T_vector = np.linalg.solve(A, b)
+
+    # 将结果重塑为二维网格
+    T = T_vector.reshape(Ny + 1, Nx + 1)
+
+    return T
+
+start_time_2d = time.time()
+T2 = solve_Poisson2()
+end_time_2d = time.time()
+time_2d = end_time_2d - start_time_2d
+
+start_time_3 = time.time()
+T3 = solve_Poisson2_compare()
+end_time_3 = time.time()
+time_3 = end_time_3 - start_time_3
+
+# 绘制二维结果
+plt.figure(figsize=(10, 8))
+plt.contourf(x, y, T2, levels=50, cmap='hot_r')
+plt.colorbar(label='温度')
+plt.title('二维泊松方程的卫星组件热布局温度场预测')
+plt.xlabel('x')
+plt.ylabel('y')
+
+# 标记热源区域
+plt.contour(x, y, f1(x, y), levels=[0.1], colors='blue', linewidths=2)
+plt.contour(x, y, f2(x, y), levels=[0.1], colors='green', linewidths=2)
+plt.contour(x, y, f3(x, y), levels=[0.1], colors='red', linewidths=2)
+
+
+plt.show()
+
+# 打印温度范围信息
+print(f"温度范围: {T2.min():.4f} to {T2.max():.4f}")
+print(f"一维计算时间: {time_1d:.6f}秒")
+print(f"二维计算时间(方法1 - 循环): {time_2d:.6f}秒")
+print(f"二维计算时间(方法2 - 分块): {time_3:.6f}秒")
+print(f"两种方法结果差异: {np.max(np.abs(T2 - T3)):.6e}")
