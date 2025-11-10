@@ -1,0 +1,179 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False
+
+D = 0.005
+u = 1.0
+t_init = 0
+t_stop = 2.5
+Nt = 200
+x_left = 0
+x_right = 10
+Nx = 500
+
+fig, ax = plt.subplots(2, 3, figsize=(20, 10))
+ax = ax.ravel()
+fig.set_tight_layout(True)
+
+def pulse(x,t):
+    p=1 / np.sqrt(4 * t + 1) * np.exp(-(x - 4 - u * t) ** 2 / (4 * t + 1) / D) \
+        + 1.8 / np.sqrt(4 * t + 10) * np.exp(-(x - 6 - u * t) ** 2 / (4 * t + 10) / D) \
+        + 3 / np.sqrt(4 * t + 100) * np.exp(-(x - 1 - u * t) ** 2 / (4 * t + 100) / D)
+    return p
+
+def init_num(x): #初始化
+    return pulse(x,t=t_init)
+
+x_grid=np.linspace(x_left,x_right,Nx+1) #x网格
+t_grid=np.linspace(t_init,t_stop,Nt+1) #t网格
+dx=x_grid[1]-x_grid[0] #空间步长
+dt=t_grid[1]-t_grid[0] #时间步长
+CFL=u*dt/dx #CFL数，0<r<1
+Pe = u * dx / D #Péclet数表示了对流输运与扩散输运的比率
+print(f"CFL数: {CFL:.3f}，Péclet数: {Pe:.3f}，r/Pe={CFL/ Pe}")
+
+schemes=['unstable', 'upwind', 'leapfrog', 'lax_friedrichs',
+           'lax_wendroff', 'beam_warming']
+t_table_result=[]
+
+for idx,scheme in enumerate(schemes):
+    t_table=np.zeros((len(t_grid),len(x_grid)))
+    t_table[0,:]=init_num(x_grid)
+
+    if scheme=='upwind':#迎风
+        for n in range(len(t_table)-1):
+            for i in range(1, len(x_grid)-1):
+                t_table[n + 1, i] = (1 - CFL - 2 * CFL / Pe) * t_table[n, i] \
+                                       + (CFL + CFL / Pe) * t_table[n, i-1] \
+                                       + CFL / Pe * t_table[n, i+1]
+            t_table[n + 1, 0] = pulse(x=x_grid[0], t=dt * n)
+            t_table[n + 1, -1] = pulse(x=x_grid[-1], t=dt * n)
+
+    elif scheme == 'leapfrog':
+        t_table[1, :] = pulse(x=x_grid, t=dt)
+        for n in range(1, len(t_table) - 1):
+            for i in range(1, len(x_grid) - 1):
+                t_table[n + 1, i] = -CFL * t_table[n, i + 1] \
+                                    + t_table[n - 1, i] \
+                                    + CFL * t_table[n, i - 1] \
+                                    + CFL / Pe * t_table[n, i + 1] \
+                                    - 2 * CFL / Pe * t_table[n, i] \
+                                    + CFL / Pe * t_table[n, i - 1]
+
+            t_table[n + 1, 0] = pulse(x=x_grid[0], t=dt * n )
+            t_table[n + 1, -1] = pulse(x=x_grid[-1], t=dt * n)
+
+    elif scheme=='lax_friedrichs':
+        for n in range(len(t_table)-1):
+            for i in range(1,len(x_grid)-1):
+                t_table[n + 1, i] = 0.5 * (1 - CFL) * t_table[n, i+1] \
+                                       + 0.5 * (1 + CFL) * t_table[n, i-1] \
+                                       + CFL / Pe * t_table[n, i+1] \
+                                       - 2 * CFL / Pe * t_table[n, i] \
+                                       + CFL / Pe * t_table[n, i-1]
+            t_table[n + 1, 0] = pulse(x=x_grid[0], t=dt * n)
+            t_table[n + 1, -1] = pulse(x=x_grid[-1], t=dt * n)
+
+    elif scheme=='lax_wendroff':
+        for n in range(len(t_table)-1):
+            for i in range(1,len(x_grid)-1):
+                t_table[n + 1, i] = 0.5 * (CFL - 1) * CFL * t_table[n, i+1] \
+                                       + (1 - CFL * CFL) * t_table[n, i] \
+                                       + 0.5 * (1 + CFL) * CFL * t_table[n, i-1] \
+                                       + CFL / Pe * t_table[n, i+1] \
+                                       - 2 * CFL / Pe * t_table[n, i] \
+                                       + CFL / Pe * t_table[n, i-1]
+            t_table[n + 1, 0] = pulse(x=x_grid[0], t=dt * n)
+            t_table[n + 1, -1] = pulse(x=x_grid[-1], t=dt * n)
+
+    elif scheme == 'beam_warming':
+        for n in range(len(t_table) - 1):
+            for i in range(2, len(x_grid) - 1):
+                t_table[n + 1, i+1] = (1 - 1.5 * CFL + CFL * CFL * 0.5) * t_table[n, i+1] \
+                                    + (2 * CFL - CFL * CFL) * t_table[n, i] \
+                                    + (-0.5 * CFL + 0.5 * CFL * CFL) * t_table[n, i-1] \
+                                    + CFL / Pe * t_table[n, i+1 ] \
+                                    - 2 * CFL / Pe * t_table[n, i] \
+                                    + CFL / Pe * t_table[n, i-1]
+            t_table[n + 1, 0] = pulse(x=x_grid[0], t=dt * n)
+            t_table[n + 1, 1] = pulse(x=x_grid[1], t=dt * n)
+            t_table[n + 1, -1] = pulse(x=x_grid[-1], t=dt * n)
+
+    else:
+        for n in range(len(t_table)-1):
+            for i in range(1,len(x_grid)-1):
+                t_table[n + 1, i] = (CFL / Pe - 0.5 * CFL) * t_table[n, i+1] \
+                                       + (1 - 2 * CFL / Pe) * t_table[n, i] \
+                                       + (CFL / Pe + 0.5 * CFL) * t_table[n, i-1]
+            t_table[n + 1, 0] = pulse(x=x_grid[0], t=dt * n)
+            t_table[n + 1, -1] = pulse(x=x_grid[-1], t=dt * n)
+
+    t_table_result.append(t_table)
+
+# 创建动画
+lines = []
+exact_lines = []
+time_texts = []
+
+for idx, scheme in enumerate(schemes):
+    # 绘制数值解和精确解
+    line, = ax[idx].plot([], [], linewidth=2, label='数值解', color='blue')
+    exact_line, = ax[idx].plot([], [], '--', linewidth=1.5, label='精确解', color='red')
+    lines.append(line)
+    exact_lines.append(exact_line)
+
+    # 设置初始坐标轴范围
+    ax[idx].set_xlim([x_left, x_right])
+    ax[idx].set_ylim([-0.1, 1.1])
+    ax[idx].set_title(scheme)
+    ax[idx].grid(True, alpha=0.3)
+    ax[idx].set_xlabel('x')
+    ax[idx].set_ylabel('T')
+
+    # 添加时间文本
+    time_text = ax[idx].text(0.02, 0.95, '', transform=ax[idx].transAxes, fontsize=10,
+                             bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+    time_texts.append(time_text)
+
+    if idx == 0:
+        ax[idx].legend(loc='upper right')
+
+# 初始化函数
+def init():
+    for line, exact_line, time_text in zip(lines, exact_lines, time_texts):
+        line.set_data([], [])
+        exact_line.set_data([], [])
+        time_text.set_text('')
+    return lines + exact_lines + time_texts
+
+
+# 更新函数 - 波从左边界运动到右边界
+def update(frame):
+    current_time = frame * dt + t_init
+
+    for idx, (line, exact_line, time_text, t_table) in enumerate(zip(lines, exact_lines, time_texts, t_table_result)):
+        # 更新数值解
+        line.set_data(x_grid, t_table[frame, :])
+
+        # 更新精确解
+        exact_line.set_data(x_grid, pulse(x_grid, current_time))
+
+        # 更新时间文本
+        time_text.set_text(f't = {current_time:.2f}')
+
+    return lines + exact_lines + time_texts
+
+# 创建动画对象
+ani = FuncAnimation(fig, update, frames=range(Nt + 1),
+                    init_func=init, blit=True, interval=50, repeat=True)
+
+# 添加总标题
+fig.suptitle('一维对流扩散方程', fontsize=16)
+
+plt.tight_layout()
+
+# 显示动画
+plt.show()
